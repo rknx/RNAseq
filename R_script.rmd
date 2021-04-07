@@ -1,0 +1,854 @@
+---
+title: RNA-seq analysis
+date: 2020-11-03
+output: word_document
+---
+
+
+# Preparation of environment and inputs -------------------------------------
+
+## Install packages
+
+The RNA-seq will be completed using following packages:
+**BiocManager**: for installing Bioconductor packages
+**devtools**: for installing github hosted packages
+**DESeq2**: for bulk of differential expression analysis
+**ashr**: for LFC shrinking method
+**AnnotationHub**: for creating OrgDb for citrus
+**clusterProfiler**: for enrichment analysis (GO and KEGG)
+**pathView**: for visualizing the enrichment in KEGG pathways
+**genefilter**: for finding backgeround genes
+**ggplot2**: for visualization
+**scales**: for transformation
+**ggforce**: for some extra shapes
+**ggrepel** for some text display tweaks
+**ggdendro**: for parsing cluster line segments
+**cowplot**: for merging different plots
+
+A helper function libInstall was written to streamline the process.
+
+```{r eval = FALSE}
+libInstall = function(package, source = "CRAN") {
+    libPath = .libPaths()[1]
+    if (!requireNamespace(package, char = T, quietly = T)) {
+        if (source == "github") {
+            devtools::install_github(package)
+        } else if (source == "bioconductor") {
+            BiocManager::install(package, lib = libPath)
+        } else {
+            install.packages(package)
+        }
+    }
+}
+libInstall("BiocManager")
+libInstall("devtools")
+libInstall("scales")
+libInstall("ggplot2")
+libInstall("ggrepel")
+libInstall("ggdendro")
+libInstall("cowplot")
+libInstall("Deseq2", "bioconductor")
+libInstall("AnnotationHub", "bioconductor")
+libInstall("clusterProfiler", "bioconductor")
+libInstall("pathview", "bioconductor")
+libInstall("genefilter", "bioconductor")
+libInstall("stephens999/ashr", "github")
+```
+
+## HTSeq inputs
+
+DESeq2 can import dat directly from HTSeq output without having to make
+a matrix manually. For that, we get list of all HTSeq output files
+and generate a samples file for DESeq2.
+
+Separate subset samples are prepared for different timepoints and conditions.
+
+```{r echo = T, results = "hide"}
+# List of htseq output files for all samples
+fileList = list.files(path = "htseq", pattern = "[.]counts.tsv")
+
+# Helper function to convert the sample names in to replications
+# This may be removed or edited accoring to the data
+reps = function(x) ifelse(as.numeric(x) > 3, "5", "2")
+
+# Sample frame with metadata to be used for DESeq2
+# This should be changed accoring to the data
+samples = data.frame(
+    sampleName = 0,
+    fileName = fileList,
+    condition = substr(fileList, 1, 1),
+    timePoint = reps(substr(fileList, 2, 2)),
+    replicate = as.factor((as.numeric(substr(fileList, 2, 2)) - 1) %% 3 + 1)
+)
+samples$sampleName = paste0(samples[, 3], samples[, 4], "-", samples[, 5])
+
+# Partial samples for individual analysis
+# This should be changed accoring to the data
+samples2 = samples[samples$timePoint == "2", ]
+samples5 = samples[samples$timePoint == "5", ]
+samplesC = samples[samples$condition == "C", ]
+samplesX = samples[samples$condition == "X", ]
+```
+
+## Entrez ID
+
+An annotation table linking gene name to Entrez ID is also imported for 
+subsequent enrichment analysis.
+
+```{r,  echo = T, results = "hide"}
+anno = read.delim(
+    "refs/annotation.table",
+    col.names = c("Gene_ID", "Gene", "Gene_Desc"),
+    header = F,
+    stringsAsFactors = F
+)
+
+annConv = function(.geneList, inType, outType) as.character(
+    anno[[outType]][match(.geneList, anno[[inType]], nomatch = NA)]
+)
+```
+
+## Various plots
+
+Plots.R contains code for variaous plots.
+
+```{r}
+source("R_plots.r")
+```
+
+---
+
+# Exploratory analysis ------------------------------------------------------
+
+## Prepare input matrix
+
+A matrix with raw counts from all samples is prepared.
+
+```{r}
+# Combine all inputs into one single frame
+rawCounts = Reduce(
+    cbind,
+    lapply(
+        fileList,
+        function(x) read.delim(
+            paste0("htseq/", x),
+            header = F,
+            row.names = 1,
+            col.names = c("Gene", samples$sampleName[samples$fileName == x]),
+            check.names = F
+        )
+    )
+)
+
+# Save the dataframe
+write.table(rawCounts, "htseq/counts.all.tsv")
+
+# Output frame
+head(rawCounts)
+```
+
+## Formating for scatterplot
+
+Mean expression is calculated for each gene, for every timepoint and condition.
+The output is parsed to a dataframe for plotting.
+
+```{r}
+
+dfMeans = do.call(rbind, lapply(unique(samples$timePoint), function(x){
+    data.frame(
+        C = rowMeans(rawCounts[, startsWith(names(rawCounts), paste0("C", x))]),
+        X = rowMeans(rawCounts[, startsWith(names(rawCounts), paste0("X", x))]),
+        T = x
+    )
+}))
+
+head(dfMeans)
+```
+
+## Scatterplot
+
+Scatterplot generation using ggplot. 
+Mean expression of each gene in inculated (X) is 
+compared to those for control (C). 
+Note that both axis are in log10 scale.
+
+```{r fig.width = 8, fig.height = 8}
+# Load ggplot for plotting
+library(ggplot2)
+
+# Scientific numbers in axis
+labX = function(x, y = log2(x)) ifelse(y %% 5 == 0, math_format(2^.x)(y), "")
+
+# Potting the scatterplot
+ggplot(dfMeans, aes(C, X)) +
+    geom_jitter(alpha = 0.2, size = 0.5, #! jitter for some variability
+        width = ggplot2:::resolution(log2(dfMeans$C), FALSE) * 2000,
+        height = ggplot2:::resolution(log2(dfMeans$X), FALSE) * 2000
+    ) +
+    scale_x_continuous("Control", trans = "log2", expand = c(0, 0),
+        breaks = trans_breaks("log2", n = 15, function(x) 2^x),
+        labels = labX
+    ) +
+    scale_y_continuous("Inoculated", trans = "log2", expand = c(0, 0),
+        breaks = trans_breaks("log2", n = 15, function(x) 2^x),
+        labels = labX,
+        sec.axis = dup_axis()
+    ) +
+    # ggtitle("Average expression levels of genes") +
+    facet_wrap(~T, labeller = as_labeller(c("2" = "2 dpi", "5" = "5 dpi"))) +
+    geom_abline(col = "dodgerblue") +
+    theme_classic(base_size = 22) +
+    theme(
+        strip.background = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        aspect.ratio = 1
+    )
+```
+PCA and Heatmap should be in exploratory analysis, 
+but are kept in differential analysis becuase 
+it is easy to compute them from DESeq2 output.
+
+---
+
+# Differential Expression (DE) analysis -------------------------------------
+
+DE analysis determines which genes are expressed in 
+different levels across smples and conditions.
+
+Most of the DE analysis will be done with DESeq2.
+Visualizations will be done via self-written functions.
+
+## DESeq2 
+
+All functions functions including importing files, estimating dispesion, 
+generating models and determing expressing change and p-values 
+will be done within a wrapper function, which can be iterated for all samples.
+
+LFC shringking and filtering of significant genes is also carried out.
+
+```{r echo = T, results = "hide"}
+deHTSeq = function(.sample, .design, .dir, .annot, .out, .filter=NULL, ...) {
+
+    # Load library
+    library(DESeq2)
+
+    # Import from HTseq data
+    dds = DESeqDataSetFromHTSeqCount(.sample, .dir, .design)
+
+    # Run analysis
+    dds = DESeq(dds)
+
+    # Output results
+    res = results(dds, alpha = .filter[2])
+
+    # Print summary
+    summary(res)
+
+    # Add only the annotations in the result
+    result = cbind(res, .annot[match(rownames(res), .annot$Gene), ])
+
+    # Sort results
+    result = na.omit(result[order(result$padj), ])
+
+    # Fiter results
+    if (!is.null(filter)) {
+        result = result[
+            abs(result$log2FoldChange) >= .filter[1] &
+            result$padj < .filter[2],
+        ]
+    }
+
+    # Shrink the results to filter out noise
+    library(ashr)
+    lfc = lfcShrink(dds, coef = resultsNames(dds)[2], type = "ashr")
+    summary(lfc)
+
+    # Shrunk significant
+    resultS = cbind(lfc, .annot[match(rownames(lfc), .annot$Gene), ])
+
+    # Sort results
+    resultS = na.omit(resultS[order(resultS$padj), ])
+
+    # Fiter results
+    if (!is.null(filter)) {
+        resultS = resultS[
+            abs(resultS$log2FoldChange) >= .filter[1] &
+            resultS$padj < .filter[2],
+        ]
+    }
+
+    # Return stuffs
+    return(list(dds = dds, res = res, sig = result, lfc = lfc, lSig = resultS))
+}
+```
+
+---
+
+## Control vs Inoculated, 2 dpi
+
+### Run DE analysis
+```{r echo = T, results = "hide"}
+result2 = deHTSeq(samples2, ~ condition, "htseq", anno, "C2vX2", c(1, 0.05))
+```
+
+### Dispersion plot
+
+```{r fig.width = 8, fig.height = 8}
+plotDisp(result2$dds)
+```
+
+### MA plot
+
+Mean value vs log2foldchange
+
+```{r fig.width = 8, fig.height = 8}
+plotMA(result2$lfc, 0.05, c(5, -5))
+```
+
+### Volcano plot
+
+log2foldchange vs log10q-value
+
+```{r fig.width = 8, fig.height = 8}
+plotVolcano(result2$res, 0.05, 10, 20)
+```
+
+---
+
+## Control vs Inoculated, 5 dpi
+
+### Run DE analysis
+```{r echo = T, results = "hide"}
+result5 = deHTSeq(samples5, ~ condition, "htseq", anno, "C5vX5", c(1, 0.05))
+```
+
+### Dispersion plot
+
+```{r fig.width = 8, fig.height = 8}
+plotDisp(result5$dds)
+```
+
+### MA plot
+
+The shrunk DFrame contains points that were removed by LFS shrinking.
+
+```{r fig.width = 8, fig.height = 8}
+plotMA(result5$res, 0.05, c(5, -5))
+plotMA(result5$shrunk, 0.05, c(5, -5))
+```
+
+### Volcano plot
+
+The shrunk DFrame contains points that were removed by LFS shrinking.
+
+```{r fig.width = 8, fig.height = 8}
+plotVolcano(result5$res, 0.05, 10, 20)
+```
+
+---
+
+## Both conditions and timepoints
+
+Using both condition and timepoints together is the analysis can be
+useful, but ofthen difficult to interpret because of the interaction terms.
+
+We start by comparing the number of genes up- or down-regulated in 
+inocualted plant across timepoints, that we computed before.
+
+## Venn diagram
+
+Venn diagram is suitable to display number of elements. 
+We will compare number of DE genes, 
+as well as genes upregulated and downregulated specifically.
+
+The functions here are designed for two conditions and timepoints.
+It can be modified to have more conditions and timepoints if necessary.
+
+### Helper function to extract list of de genes for different scanarios
+```{r echo = T, results = "hide"}
+deGeneList = function(.data1, .data2) {
+    df = data.frame(gene = union(.data1$Gene_ID, .data2$Gene_ID))
+    df$aUp = df$gene %in% .data1$Gene_ID[.data1$log2FoldChange > 0]
+    df$aDown = df$gene %in% .data1$Gene_ID[.data1$log2FoldChange < 0]
+    df$bUp = df$gene %in% .data2$Gene_ID[.data2$log2FoldChange > 0]
+    df$bDown = df$gene %in% .data2$Gene_ID[.data2$log2FoldChange < 0]
+    df$a = df$aUp | df$aDown
+    df$b = df$bUp | df$bDown
+    df$ab = df$a & df$b
+    df$aOnly = df$a & !df$b
+    df$bOnly = df$b & !df$a
+    df$bothUp = df$aUp & df$bUp
+    df$bothDown = df$aDown & df$bDown
+    df$aUpbDown = df$aUp & df$bDown
+    df$aDownbUp = df$aDown & df$bUp
+    df$aUpOnly = df$aUp & !df$b
+    df$aDownOnly = df$aDown & !df$b
+    df$bUpOnly = df$bUp & !df$a
+    df$bDownOnly = df$bDown & !df$a
+    df$UpInaOnly = df$aUp & !df$bUp
+    df$DownInaOnly = df$aDown & !df$bDown
+    df$UpInbOnly = df$bUp & !df$aUp
+    df$DownInbOnly = df$bDown & !df$aDown
+    data.frame(df[, -1], row.names = df$gene)
+}
+```
+
+### Make the list
+
+```{r}
+deGenes = deGeneList(result2$lSig, result5$lSig)
+```
+
+### Venn diagram with number of DE genes only
+
+```{r fig.width = 8, fig.height = 8}
+plot_grid(
+    plotVenn2(
+        deGenes, .labels = c("2 DPI", "5 DPI")
+    ),
+    plotVenn4(
+        deGenes, .labels = c("2 DPI Up", "2 DPI Down", "5 DPI Up", "5 DPI Down")
+    ),
+    nrow = 1
+)
+```
+
+---
+
+## Both conditions and timepoints with interaction
+
+### Run DE analysis
+```{r echo = T, results = "hide"}
+resultA = deHTSeq(
+    samples, ~ condition + timePoint, "htseq", anno, "all", c(1, 0.05)
+)
+```
+
+### Dispersion plot
+
+```{r fig.width = 8, fig.height = 8}
+plotDisp(resultA$dds)
+```
+
+### Generate interaction plots
+
+This is an example for a single gene with highest q-value.
+For multiple genes simultanelusly, use cowplot.
+
+```{r fig.width = 8, fig.height = 8}
+countPlot(
+    resultA$dds,
+    rownames(resultA$sig)[which.min(resultA$sig$padj)],
+    c("condition", "timePoint")
+)
+```
+
+### PCA plot
+
+```{r fig.width = 8, fig.height = 8}
+plotPCA(resultA$dds, c("condition", "timePoint"), .nclust = 4)
+```
+
+# Enrichment analysis -------------------------------------------------------
+
+## OrgDb generation
+
+We use a AnnotationDbi database for GO analysis.
+For citrus sinensis, the database ID is AH76095.
+For other organisms, use query(AnnotationHub(), "organism")
+or see help for annotationhub package in bioconductor.
+
+keggOrg is the kegg ID for the organism.
+
+```{r}
+# AnnotationHub library for generating OrgDb for Cit
+library(AnnotationHub)
+citrus = AnnotationHub()[["AH76095"]]
+keggOrg = "cit"
+```
+
+## Finding background genes
+
+### Function for determining background genes
+```{r}
+backGenes = function(.res, anno = anno, return = F) {
+    .exprMat = as.matrix(.res[, "baseMean", drop = F])
+    .res2 = na.omit(.res)
+    .sig = .res[abs(.res2$log2FoldChange) >= 1 & .res2$padj >= .05, ]
+    library(genefilter)
+    .bGenes = sapply(match(rownames(.sig), rownames(.exprMat)), function(x) {
+        genefinder(.exprMat, x, 10, method = "manhattan")[[1]]$indices
+    })
+    .bGenes = rownames(.exprMat)[unique(c(.bGenes))]
+    .bGenes = .bGenes[!.bGenes %in% rownames(.sig)]
+    if (return == T) return(anno$Gene_ID[anno$Gene %in% .bGenes])
+    cols = c("r" = "red", "b" = "blue", "g" = "green")
+    ggplot() +
+        geom_density(aes(log2(.res$baseMean), col = "g", fill = "g")) +
+        geom_density(aes(log2(.sig$baseMean), col = "r", fill = "r")) +
+        geom_density(aes(log2(.res[.bGenes, 1]), col = "b", fill = "b")) +
+        labs(
+            x = "log2 mean normalized counts",
+            y = "Density",
+            title = "Foreground and background genes in enrichment analysis"
+        ) +
+        scale_color_manual(values = cols, guide = F) +
+        scale_x_continuous(breaks = scales::pretty_breaks(n = 8)) +
+        scale_fill_manual(
+            "Legend",
+            values = setNames(adjustcolor(cols, .3), names(cols)),
+            labels = c(
+                "r" = "Foreground genes",
+                "b" = "Background genes",
+                "g" = "All genes"
+            ),
+            breaks = c("r", "b", "g")
+        ) +
+        theme_classic() +
+        theme(
+            plot.title = element_text(hjust = 0.5, face = "bold"),
+            legend.position = c(1, 1),
+            legend.justification = c(1, 1),
+            legend.title.align = 0.5
+        )
+}
+```
+
+### Background genes density plot
+```{r include = F}
+backGenes(result2$res)
+```
+
+### Main analysis wrapper
+
+Main wrapper function to perform GO and KEGG analysis simultaneously.
+GSEA and DO analysis are not supported.
+
+```{r}
+
+enrichAnalysis = function(
+    .genes,
+    .orgdb = citrus,
+    .ont = "BP",
+    .org = "cit",
+    .pvalue = 0.01,
+    ...
+) {
+
+    # Load library
+    library(clusterProfiler)
+    out = list()
+
+    # GO enrichemnt analysis
+    out$go = enrichGO(.genes, .orgdb, ont = .ont, pvalueCutoff = .pvalue, ...)
+
+    # KEGG enrichment analysis
+    out$kegg = enrichKEGG(.genes, .org, pvalueCutoff = .pvalue)
+
+    return(out)
+}
+```
+
+## GO and KEGG Analysis for significant genes
+
+Error "External pointer is not valid" occurs if orgdb is not reloaded.
+
+### For C vs X, at 2 dpi
+```{r echo = T, results = "hide"}
+sigGenes = result2$lSig$Gene_ID
+geneList = enrichAnalysis(sigGenes)
+```
+
+For others:
+- For C vs X, at 5 dpi: sigGenes = result5$lSig$Gene_ID
+- For upregulated in X in 2 dpi: rownames(deGenes)[deGenes$aUp]
+- For downregulated in X in 2 dpi: rownames(deGenes)[deGenes$aDown]
+- For upregulated in X in 5 dpi: rownames(deGenes)[deGenes$bUp]
+- For downregulated in X in 5 dpi: rownames(deGenes)[deGenes$bDown]
+- For upregulated in X in both dpi: rownames(deGenes)[deGenes$bothUp]
+- For downregulated in X in both dpi: rownames(deGenes)[deGenes$bothDown]
+- For upregulated in X in 5 dpi only: rownames(deGenes)[deGenes$bUpOnly]
+- For downregulated in X in 5 dpi only: rownames(deGenes)[deGenes$bDownOnly]
+
+### GO BP Bar Plot
+
+```{r fig.width = 8, fig.height = 8}
+enrichBarPlot(geneList$go)
+```
+
+### GO BP Dot Plot
+
+```{r fig.width = 8, fig.height = 8}
+enrichDotPlot(geneList$go)
+```
+
+### CC Bar Plot
+```{r fig.width = 8, fig.height = 8}
+geneListCC = enrichAnalysis(sigGenes, .ont = "CC")
+enrichBarPlot(geneListCC$go, .ont = "CC")
+```
+
+### MF Bar Plot
+```{r fig.width = 8, fig.height = 8}
+geneListMF = enrichAnalysis(sigGenes, .ont = "MF")
+enrichBarPlot(geneListMF$go, .ont = "MF")
+```
+
+### GO Classification Heatmap
+```{r fig.width = 8, fig.height = 8}
+heatplot(geneList2$go)
+```
+
+### GO Enrichment Map
+```{r fig.width = 8, fig.height = 8}
+emapplot(geneList2$go)
+```
+
+### Go Plot
+```{r fig.width = 8, fig.height = 8}
+goplot(geneList2$go)
+```
+
+### Go plot graph
+```{r echo = F, message = F, results = "hide", fig.keep = "all", fig.width = 8, fig.height = 8}
+plotGOgraph(geneList2$go)
+```
+
+### Kegg Bar Plot
+```{r fig.width = 8, fig.height = 8}
+enrichBarPlot(geneList2$kegg, .ont = "KEGG")
+```
+
+### Kegg Dot Plot
+```{r fig.width = 8, fig.height = 8}
+enrichDotPlot(geneList2$kegg, .ont = "KEGG")
+```
+
+### KEGG Classification Heatmap
+```{r fig.width = 8, fig.height = 8}
+heatplot(geneList2$kegg)
+```
+
+### KEGG Enrichment Map
+```{r fig.width = 8, fig.height = 8}
+emapplot(geneList2$kegg)
+```
+
+---
+
+## compareCluster: figure for publication
+```{r fig.width = 12, fig.height = 8}
+
+library(clusterProfiler)
+
+ccList = list(
+    `2 dpi-Up` = rownames(deGenes)[deGenes$aUp],
+    `2 dpi-Down` = rownames(deGenes)[deGenes$aDown],
+    `2 dpi-All DE` = rownames(deGenes)[deGenes$a],
+    `5 dpi-Up` = rownames(deGenes)[deGenes$bUp],
+    `5 dpi-Down` = rownames(deGenes)[deGenes$bDown],
+    `5 dpi-All DE` = rownames(deGenes)[deGenes$b],
+    `Both-Up` = rownames(deGenes)[deGenes$bothUp],
+    `Both-Down` = rownames(deGenes)[deGenes$bothDown],
+    `Both-All DE` = rownames(deGenes)[deGenes$bothUp | deGenes$bothDown],
+    `Both-Flip` = rownames(deGenes)[deGenes$aUpbDown | deGenes$aDownbUp]
+)
+
+out = as.data.frame(compareCluster(
+    ccList,
+    fun = "enrichKEGG",     # for kegg analysis only
+    organism = "cit",       # for kegg analysis only
+    # fun = "enrichGO",     # for go analysis only
+    # ont = "BP",           # for go analysis only
+    # OrgDb = citrus,       # for go analysis only
+    pvalueCutoff = 0.05,
+    qvalueCutoff = 0.1
+))
+
+spHy = function(str, sym, n) sapply(
+    strsplit(as.character(str), sym),
+    function(x, y) x[[y]],
+    n
+)
+count = aggregate(as.numeric(spHy(out$GeneRatio, "/", 2)), list(out$Cluster), max)
+
+df = data.frame(
+    GR = sapply(out$GeneRatio, function(x) eval(parse(text = x))),
+    y = factor(out$Description, levels = rev(unique(out$Description))),
+    f = spHy(out$Cluster, "-", 1),
+    x = sapply(out$Cluster, function(x) paste0(
+        spHy(x, "-", 2), "\n(", count[count[, 1] == x, 2], ")"
+    )),
+    p = out$p.adjust
+)
+
+df$x = factor(df$x, levels = unique(df$x))
+
+df = do.call(rbind, lapply(
+    split(df, paste0(df$x, df$f)),
+    function(x) x[order(rev(x$GR)), -9]
+))
+
+library(ggplot2)
+
+ggplot(df, aes(x, y, col = p, size = GR)) +
+    geom_point() +
+    scale_color_gradient(
+        stringr::str_wrap("Adjusted p-value", width = 10),
+        low = "#D32F2F",
+        high = "#303F9F",
+        breaks = seq(0, 0.1, 0.01),
+        limits = c(0, 0.05),
+        guide = guide_colorbar(reverse = T)
+    ) +
+    labs(
+        x = NULL,
+        y = NULL
+    ) +
+    scale_y_discrete(
+        labels = scales::wrap_format(36)
+    ) +
+    scale_size(
+        "Gene\nRatio",
+        guide = guide_legend(reverse = T),
+        breaks = seq(0, 1, 0.05)
+    ) +
+    facet_grid(. ~ f, scales = "free_x", space = "free_x") +
+    theme_minimal(base_size = 18) +
+    theme(
+        plot.title = element_text(hjust = 0.5),
+        panel.border = element_rect(color = "black", fill = NA),
+        panel.grid = element_blank(),
+        axis.text.y = element_text(size = 18),
+        legend.key.height = unit(10, "mm")
+    ) +
+    ggtitle("KEGG pathway enrichment test") # change to GO overrepresentation
+```
+
+---
+
+# Pathway visualization -----------------------------------------------------
+
+`browseKEGG(geneList5$kegg, "cit00940")` 
+can be used to navigate this pathway in web broswer.
+
+`bitr_kegg("cit00940", "Path", "ncbi-geneid", "cit")` 
+can be used to get list of all genes in this pathway
+
+The KEGG pathways of interest can be visualized in a picture.
+
+```{r warning=FALSE, message = F, fig.width = 8, fig.height = 8}
+pathWay = function(.res, keggPath, suf = "", .org = "cit") {
+
+    library(pathview)
+
+    geneListWithFC = as.data.frame(.res[,startsWith(names(.res), "log2")])
+    rownames(geneListWithFC) = annConv(rownames(.res), "Gene", "Gene_ID")
+    # print(geneListWithFC[imp])
+    pathview(
+        gene.data = geneListWithFC,
+        pathway.id = keggPath,
+        species = .org,
+        out.suffix = suf,
+        low = list(gene = "#4be787", cpd = "blue"),
+        mid = list(gene = "#d3d3d3", cpd = "#d3d3d3"),
+        high = list(gene = "#ec5757", cpd = "yellow"),
+        limit = list(gene = 2, cpd = 1),
+        bins = list(gene = 10, cpd = 10),
+        gene.idtype = "ENTREZ",
+        multi.data = T
+    )
+}
+
+lapply(
+    paste0("cit0", c("0270", "0380", "0592", "0904", "0905",
+    "0906", "0940", "4016", "4075", "0626", "0040", "0500")),
+    function(x) pathWay(cbind(result2$lfc, result5$lfc), x, "res")
+)
+
+# knitr::include_graphics("cit0xxxx.multi.res.png")
+```
+To check separately, 
+lapply(
+    paste0("cit0", c("0520")),
+    function(x) {
+        pathWay(result2$sig, x, "sig2")
+        pathWay(result5$sig, x, "sig5")
+    }
+)
+
+# Downsteam analysis --------------------------------------------------------
+
+### Heatmap for a pathway
+```{r}
+library(clusterProfiler)
+library(ggplot2)
+
+imp = c(
+    # 4CL
+    "102609336", "102609606", "102610430", "102611686", "102623419",
+    "102624997", "102626986", "102627453", "102629456", "112499363"
+)
+
+imp = bitr_kegg("cit00940", "Path", "ncbi-geneid", "cit")[, 2]
+
+plotHeat(
+    resultA$dds,
+    .genes = annConv(imp, "Gene_ID", "Gene"),
+    .cond = c("condition", "timePoint"),
+    .ntop = F
+)
+```
+
+### Heatmap for important genes
+```{r}
+library(ggplot2)
+
+imp = c(
+    # 4CL
+    "102609336", "102609606", "102610430", "102611686", "102623419",
+    "102624997", "102626986", "102627453", "102629456", "112499363"
+)
+
+plotHeat(
+    resultA$dds,
+    .genes = annConv(imp, "Gene_ID", "Gene"),
+    .cond = c("condition", "timePoint"),
+    .ntop = F
+)
+```
+
+
+### Count plot for important genes
+```{r}
+
+library(ggplot2)
+
+list = c(
+    "LOB1" = "102622391",
+    "SWEET1" = "102614031",
+    "MAF1" = "102577943",
+    "MAPKKK5" = "102627347",
+    "AIM1" = "102623634",
+    "ICS1" = "102630235",
+    "SARD1" = "102612087",
+    "EDS1" = "102618041",
+    "NDR1" = "102630232",
+    "CYP711A1" = "102619882",
+    "AOS" = "102578025"
+)
+
+plot_grid(
+    plotlist = lapply(
+        seq_along(list),
+        function(x){
+            countPlot(
+                resultA$dds,
+                annConv(list[x], "Gene_ID", "Gene"),
+                c("condition", "timePoint")
+            ) +
+            ggtitle(names(list)[x])
+        }
+    ),
+    ncol = 3
+)
