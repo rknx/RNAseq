@@ -27,6 +27,7 @@ mkdir refs fastq align htseq #stringtie
 # Links for C. sinensis
 refgenome="https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/317/415/GCF_000317415.1_Csi_valencia_1.0/GCF_000317415.1_Csi_valencia_1.0_genomic.fna.gz"
 refannotation="https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/317/415/GCF_000317415.1_Csi_valencia_1.0/GCF_000317415.1_Csi_valencia_1.0_genomic.gtf.gz"
+refname="ref_genome" # E.g., Csi_valencia, Sly_Heinz
 
 # Reference genome
 wget -O - $refgenome | gzip -d > refs/genome.fna
@@ -51,7 +52,7 @@ extract_splice_sites.py refs/genes.gtf > refs/splicesites.tsv
 extract_exons.py refs/genes.gtf > refs/exons.tsv
 
 # Index genome
-hisat2-build -p 8 --ss refs/splicesites.tsv --exon refs/exons.tsv refs/genome.fna refs/Csi_valencia
+hisat2-build -p 8 --ss refs/splicesites.tsv --exon refs/exons.tsv refs/genome.fna refs/"$refname"
 
 ## Checking for strandness (optional) -------------------------------------
 
@@ -135,8 +136,8 @@ fqlist=`basename -s fastq.gz fastq/*.fastq.gz | cut -d "_" -f1-3 | uniq`
 # Reference genome has already been indexed
 # samtools converts output .sam to binary .bam
 align() {
-    hisat2 -p 8 \ # 8 CPUs for each alignment
-        -x refs/Csi_valencia \
+    hisat2 -p 8 \
+        -x refs/"refname" \
         --dta \
         -1 fastq/"$1"_R1_001.fastq.gz \
         -2 fastq/"$1"_R2_001.fastq.gz \
