@@ -1,0 +1,37 @@
+#!/bin/sh
+#SBATCH --account <group>
+#SBATCH --qos <group>
+#SBATCH --job-name rnaseq
+#SBATCH --mail-type END,FAIL
+#SBATCH --mail-user <email>
+#SBATCH --nodes 1
+#SBATCH --ntasks 1
+#SBATCH --cpus-per-task=9
+#SBATCH --mem=24g
+#SBATCH --time=16:00:00
+#SBATCH --output=rnaseq_%j.log
+
+date
+
+## Prepare environment --------------------------------------------------
+
+# Load required modules
+module load samtools parallel hisat2/2.2.0 htseq fastqc multiqc flexbar
+
+## Prepare reference files -------------------------------------------------
+
+# Links for reference files
+# Reference genome fasta (compressed gz)
+# E.g., https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/188/115/GCF_000188115.4_SL3.0/GCF_000188115.4_SL3.0_genomic.fna.gz
+export refgenome=""
+
+# Annotation gtf for reference genome (compressed gz)
+# E.g., https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/188/115/GCF_000188115.4_SL3.0/GCF_000188115.4_SL3.0_genomic.gtf.gz
+export refannotation=""
+
+# Name for reference genome
+# E.g., Sly3_Heinz
+export refname=""
+
+## Run the analysis
+./bash_script.sh $refgenome $refannotation $refname
