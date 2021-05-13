@@ -1,5 +1,14 @@
 #!/bin/sh
 
+########################################################################
+
+Parallelized RNA-seq transcript abundance pipeline
+Author: Anuj Sharma
+Email: rknx@outlook.com>
+Github: https://github.com/rknx/rna-seq-deseq2
+
+########################################################################
+
 ## Prepare environment --------------------------------------------------
 
 # Timestamp function
