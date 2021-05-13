@@ -4,8 +4,9 @@
 
 Parallelized RNA-seq transcript abundance pipeline
 Author: Anuj Sharma
-Email: rknx@outlook.com>
+Email: rknx@outlook.com
 Github: https://github.com/rknx/rna-seq-deseq2
+Modified: May 13th, 2021
 
 ########################################################################
 
