@@ -16,7 +16,7 @@ date
 ## Prepare environment --------------------------------------------------
 
 # Load required modules
-module load samtools parallel hisat2/2.2.0 htseq fastqc multiqc flexbar
+module load parallel hisat2/2.2.0 fastqc multiqc trim_galore samtools htseq
 
 ## Prepare reference files -------------------------------------------------
 
@@ -33,5 +33,12 @@ export refannotation=""
 # E.g., Sly3_Heinz
 export refname=""
 
+# Domain: "prok" for prokaryotes and "euk" for eukaryotes
+export refdomain="euk"
+
+# Nunber of CPU for parallel processing, usually number of CPU available - 1, multiple of 8.
+export ncpu=8
+
+
 ## Run the analysis
-./bash_script.sh $refgenome $refannotation $refname
+./bash_script.sh $refgenome $refannotation $refname $refdomain $ncpu
