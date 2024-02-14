@@ -20,3 +20,6 @@ If runnning in HPC, update the arguments in batch file and `sbatch batch`. Compr
 | Abundance | HTSeq |
 | Differential expression | DESeq2 |
 | Enrichement | Clusterprofiler |
+
+### Citation
+**Sharma A**, Ference CM, Shantharaj D, Baldwin EA, Manthey JA, Jones JB. Transcriptomic analysis of changes in *Citrus× microcarpa* gene expression post *Xanthomonas citri* subsp. *citri* infection. European Journal of Plant Pathology. 2021:1-9. doi: http://dx.doi.org/10.1007/s10658-021-02394-6.
